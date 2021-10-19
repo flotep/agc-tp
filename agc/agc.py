@@ -22,6 +22,7 @@ from collections import Counter
 # https://github.com/briney/nwalign3
 # ftp://ftp.ncbi.nih.gov/blast/matrices/
 import nwalign3 as nw
+import operator
 
 __author__ = "Your Name"
 __copyright__ = "Universite Paris Diderot"
@@ -70,12 +71,26 @@ def get_arguments():
     return parser.parse_args()
 
 def read_fasta(amplicon_file, minseqlen):
-    pass
+    with gzip.open(amplicon_file, "rt") as file:
+        sequence = ""
+        for line in file :
+            if not line.startswith(">"):
+                sequence = sequence + line.strip()  
+            else:
+                if len(sequence) >= minseqlen :
+                    yield sequence
+                sequence = ""
+        yield sequence
 
 
 def dereplication_fulllength(amplicon_file, minseqlen, mincount):
-    pass
-
+    sequences = read_fasta(amplicon_file, minseqlen)
+    counter = Counter(sequences)
+    dict = {k: v for k, v in counter.items() if v >=  mincount}
+    dict_sorted = sorted(dict.items(), key=operator.itemgetter(1), reverse=True)
+    
+    for seq,count in dict_sorted :
+        yield [seq,count]
 
 def get_unique(ids):
     return {}.fromkeys(ids).keys()
@@ -114,14 +129,35 @@ def chimera_removal(amplicon_file, minseqlen, mincount, chunk_size, kmer_size):
     pass
 
 def abundance_greedy_clustering(amplicon_file, minseqlen, mincount, chunk_size, kmer_size):
-    pass
+    otu_list = []
+    seq_list = list(dereplication_fulllength(amplicon_file, minseqlen, mincount))
+    identity = False
+    #Pour chaque sequence [i] dans la liste de séquence
+    for i, sequence  in enumerate(seq_list):
+        if i == 0 : #la 1ère séquence est une OTU
+            otu_list.append(sequence)
+        else : #on aligne la séquence [i] avec les OTUs [j]
+            for j in range (len(otu_list)):
+                align = nw.global_align(seq_list[i][0], otu_list[j][0],
+                        gap_open=-1, gap_extend=-1, matrix=os.path.abspath(os.path.join(os.path.dirname(__file__),"MATCH")))
+                if get_identity(align) > 97 and otu_list[j][1] > seq_list[i][1] : #si on ne trouve pas de séquence identique et plus abondante dans la liste d'OTUs
+                    identity = True
+                    break
+            if identity == False :
+                otu_list.append(sequence) #cette séquence est un OTU     
+    return otu_list
 
 def fill(text, width=80):
     """Split text with a line return to respect fasta format"""
     return os.linesep.join(text[i:i+width] for i in range(0, len(text), width))
 
 def write_OTU(OTU_list, output_file):
-    pass
+    with open(output_file, "w") as file:
+        for i, OTU in enumerate(OTU_list):
+            file.write(">OTU_{} occurrence:{}\n".format(i+1, OTU[1]))
+            file.write(fill(OTU[0]) + "\n")
+
+
 
 #==============================================================
 # Main program
@@ -133,7 +169,7 @@ def main():
     # Get arguments
     args = get_arguments()
     # Votre programme ici
-
+    
 
 if __name__ == '__main__':
     main()
