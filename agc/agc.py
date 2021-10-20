@@ -125,26 +125,54 @@ def get_identity(alignment_list):
             id_nu += 1
     return round(100.0 * id_nu / len(alignment_list[0]), 2)
 
-def chimera_removal(amplicon_file, minseqlen, mincount, chunk_size, kmer_size):
-    pass
+def chimera_removal(amplicon_file, minseqlen, mincount, chunk_size, kmer_size) :
+    seq_list = list(dereplication_fulllength(amplicon_file, minseqlen, mincount))
+    kmer_dict = {}
+    kmer_dict = get_unique_kmer(kmer_dict, seq_list[0][0], 0, kmer_size)
+    yield seq_list[0]
+    kmer_dict = get_unique_kmer(kmer_dict, seq_list[1][0], 1, kmer_size)
+    yield seq_list[1]
+
+    for i, sequence in enumerate (seq_list):
+        if i > 1 : 
+            perc_identity_matrix = []
+            chunks = get_chunks(sequence[0], chunk_size)
+            for chunk in range (len(chunks)) : 
+                
+                best_mates = search_mates(kmer_dict, chunks[chunk], kmer_size)
+            
+                parent1 = get_chunks(seq_list[best_mates[0]][0],chunk_size)
+                parent2 = get_chunks(seq_list[best_mates[1]][0],chunk_size)
+
+                identity_1 = get_identity(nw.global_align(chunks[chunk], parent1[chunk], gap_open=-1, gap_extend=-1, matrix=os.path.abspath(os.path.join(os.path.dirname(__file__),"MATCH"))))
+                identity_2 = get_identity(nw.global_align(chunks[chunk], parent2[chunk], gap_open=-1, gap_extend=-1, matrix=os.path.abspath(os.path.join(os.path.dirname(__file__),"MATCH"))))
+                perc_identity_matrix.append([identity_1, identity_2])
+            if detect_chimera(perc_identity_matrix) == False :
+                kmer_dict = get_unique_kmer(kmer_dict, sequence[0], i, kmer_size)
+                yield([sequence[0], sequence[1]])
 
 def abundance_greedy_clustering(amplicon_file, minseqlen, mincount, chunk_size, kmer_size):
     otu_list = []
-    seq_list = list(dereplication_fulllength(amplicon_file, minseqlen, mincount))
-    identity = False
+    seq_list = list(chimera_removal(amplicon_file, minseqlen, mincount, chunk_size, kmer_size))
+    
+
     #Pour chaque sequence [i] dans la liste de séquence
     for i, sequence  in enumerate(seq_list):
         if i == 0 : #la 1ère séquence est une OTU
             otu_list.append(sequence)
+
         else : #on aligne la séquence [i] avec les OTUs [j]
+            identity = False
             for j in range (len(otu_list)):
-                align = nw.global_align(seq_list[i][0], otu_list[j][0],
-                        gap_open=-1, gap_extend=-1, matrix=os.path.abspath(os.path.join(os.path.dirname(__file__),"MATCH")))
+                align = nw.global_align(seq_list[i][0], otu_list[j][0], gap_open=-1, gap_extend=-1, matrix=os.path.abspath(os.path.join(os.path.dirname(__file__),"MATCH")))
+                
                 if get_identity(align) > 97 and otu_list[j][1] > seq_list[i][1] : #si on ne trouve pas de séquence identique et plus abondante dans la liste d'OTUs
                     identity = True
                     break
+
             if identity == False :
-                otu_list.append(sequence) #cette séquence est un OTU     
+                otu_list.append(sequence) #cette séquence est un OTU 
+
     return otu_list
 
 def fill(text, width=80):
@@ -157,6 +185,58 @@ def write_OTU(OTU_list, output_file):
             file.write(">OTU_{} occurrence:{}\n".format(i+1, OTU[1]))
             file.write(fill(OTU[0]) + "\n")
 
+def get_unique_kmer(kmer_dict, sequence, id_seq, kmer_size): #OK
+    kmer_list = list(cut_kmer(sequence, kmer_size))
+    for kmer in kmer_list:
+        if kmer in kmer_dict: #si le kmer est dejà dans le dict
+            kmer_dict[kmer] += [id_seq] #on ajoute l'id de la séquence aux autres id 
+        else:
+            kmer_dict[kmer] = [id_seq] #sinon on initialise ce nouveau kmer dans le dico
+    return kmer_dict
+    
+def search_mates(kmer_dict, sequence, kmer_size):
+    best_mates = []
+    id_seqs = []
+    kmer_list = list(cut_kmer(sequence, kmer_size)) #on coupe le chunk en kmers
+    
+    for kmer in kmer_list:
+        if kmer in kmer_dict.keys(): #si un kmer du chunk correspond à un kmer recensé dans le dict
+            id_seqs = id_seqs + kmer_dict[kmer] #on récupère les id des séquences correspondant à ce kmer dans le dict
+    
+    #Les 2 sequences id qui présentent le plus de kmer en commun avec le chunk sont les parents
+    parents = Counter(id_seqs).most_common(2) 
+    for parent in parents : 
+        best_mates.append(parent[0])
+
+    return best_mates
+
+def std(data):
+    return statistics.stdev(data)
+
+def mean(data):
+    return statistics.mean(data)
+
+def detect_chimera(perc_identity_matrix): #OK
+    similarity_seq1 = False
+    similarity_seq2 = False
+
+    #Conditions pour retourner True :
+    #A) Moyenne des écarts types > 5 
+    if mean([std(perc) for perc in perc_identity_matrix]) <= 5 :
+        return False
+    else : 
+        while similarity_seq1 == False and similarity_seq2 == False :
+            for perc in perc_identity_matrix : 
+                if perc[0] > perc[1]:
+                    similarity_seq1 = True
+                elif perc[1] > perc[0]:
+                    similarity_seq2 = True
+
+        #B) Au moins 1 segment plus similaire à la seq1 et un autre plus similaire à la seq2
+        if similarity_seq1 == True and similarity_seq2 == True :
+            return True 
+        else : 
+            return False
 
 
 #==============================================================
@@ -169,7 +249,8 @@ def main():
     # Get arguments
     args = get_arguments()
     # Votre programme ici
-    
+    OTU_list = abundance_greedy_clustering(args.amplicon_file, args.minseqlen, args.mincount, args.chunk_size, args.kmer_size)
+    write_OTU(OTU_list, args.output_file)
 
 if __name__ == '__main__':
     main()
